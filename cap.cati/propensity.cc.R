@@ -1,80 +1,130 @@
 
-
 library(MatchIt)
 library(dplyr)
 library(ggplot2)
-library(foreign)
+library(haven)
 library(gridExtra)
+library(reshape)
+library(texreg)
+library(openxlsx)
 
+library(Matching)
+library(ebal)
 
 #Abriremos nuestra base de datos
-base <- read_sav("220519 GPS Mayo REC-Pond-GSE sin perdidos_v4.sav")
 
-####CREAR VARIABLE PLEBISCITO ENTRADA
-base$C2_fct <- as_factor(base$C2)
-base <- base %>% mutate(C2_fct = case_when(as.character(C2_fct) %>% is.na() ~ "No votó",
-                                           TRUE ~ as.character(C2_fct)))
-table(base$C2_fct)
-base$C2_fct <- as.factor(base$C2_fct)
-base$C2_fct <- factor(base$C2_fct, levels = levels(base$C2_fct)[c(1,4,3,2)])
+setwd("C:/Users/Villagran/Desktop/datavoz/cati.capi")
 
-#Recodificar Cuestionario
-base <- base %>% mutate(Cuestionario_num = case_when(Cuestionario == "Versión A" ~ 1,
-                                                     Cuestionario == "Versión B" ~ 0))
-base1 <- base %>% select(respondent_id, Cuestionario, Cuestionario_num, S4,S3_rec,S5_rec,S6,S6b,GSE,P1,P1_rec,P2,P2_rec,P3,P3_rec,B5,C3,
-                         B7_1_1,B7_1_2,B7_1_3,B7_1_4,B7_1_5,B7_1_6,B7_2_1,B7_2_2,B7_2_3,B7_2_4,B7_2_5,B7_2_6,C2_fct,pond)
+base <- read_sav("220518 BBDD Homologada Experimento CEP v3.sav")
 
-base1 <- na.omit(base1)
+###### variables clave
 
-##Convertir variables a factor
+# Sexo -> SD_1
+
+# Edad -> SD_2EXACTA
+
+# Educacion -> SD_4 (recode 99 to NA)
+
+# Ocupacion -> SD_5 (recode 9 to NA)
+
+# Jefe de hogar -> SD_6 (recode 1, 2 to NA)
+
+
+base$SD_4[base$SD_4==99]<-NA
+base$SD_5[base$SD_5==9]<-NA
+base$SD_6[base$SD_6==8]<-NA
+base$SD_6[base$SD_6==9]<-NA
+
+## SELECCION DE VARIABLES CLAVE
+
+                        
+base1 <- base %>% select( # tratamiento
+                         MODO,tipo_vivienda,
+                          # variables de control
+                         SD_1,SD_2EXACTA,SD_4,SD_5,SD_6,
+                          # Variables dependientes
+                         IND_POLITIZACION,M1_9,M2_8,M2_9,
+                         M1_13_1_rec,M1_13_2_rec,M1_13_3_rec,M1_13_4_rec,M1_13_5_rec,
+                          # ponderador
+                         pond_unificado)
+
+## dejamos solamente las observaciones con el campo tipo de vivienda casa, depto
+
+#base1<- base1 %>% filter(tipo_vivienda %in% c(1, 2))
+
+base1$id<-rownames(base1)
+
+##Convertir variables compuestas a factor / o numericas 
 # Check columns classes
-sapply(base1, class)
 
-base1<-base1 %>% mutate_if(sjlabelled::is_labelled,as.factor)  
-base1$Cuestionario_num <- as.factor(base1$Cuestionario_num)
+base1$SD_2EXACTA<-as.numeric((base1$SD_2EXACTA))
+
+base1<-droplevels(as_factor(base1))
+
+colnames(base1)["SD_1"]<-"sexo"
+
+base1 = reshape::rename(base1, c(SD_1="sexo",SD_2EXACTA ="edad", SD_4 ="educacion",
+                        SD_5="ocupacion",SD_6 = "jefe.hogar" ))
+
+
+sapply(base1,class)
+
+## la función propensity precisa quitar observaciones NA de las covariables
+
+base1 <- base1[!is.na(base1$sexo),]
+base1 <- base1[!is.na(base1$edad),]
+base1 <- base1[!is.na(base1$educacion),]
+base1 <- base1[!is.na(base1$ocupacion),]
+base1 <- base1[!is.na(base1$jefe.hogar),]
+
+
+# Evaluamos balance de las variables originales
+
+base1$dummymodo<-ifelse(base1$MODO=="CAPI",1,0)
+
+
+bal.1<-MatchBalance(dummymodo~sexo + edad + educacion + ocupacion + jefe.hogar, 
+                    data=base1,
+                    match.out = NULL, ks=TRUE)
+
 
 #Elaboraremos nuestro propensity score
-#Version completa
-m_ps <- glm(Cuestionario_num ~ S4+S3_rec+S5_rec+S6+GSE+P1+P2+P3+B5+C2_fct, family = binomial, data = base1)
 
-summary(m_ps)
 
-#Versión acotada
-m_ps <- glm(Cuestionario_num ~ S4+S6b+P1_rec+P3_rec+B5+C2_fct, family = binomial, data = base1)
 
-summary(m_ps)
+m_ps <- glm(MODO ~ sexo + edad + educacion + ocupacion + jefe.hogar, 
+            family = binomial, data = base1)
+
+screenreg(m_ps)
+
+
 
 prs_df <- data.frame(pr_score = predict(m_ps, type = "response"),
-                     Cuestionario_num = m_ps$model$Cuestionario_num)
+                     MODO = m_ps$model$MODO)
 
-#Observemos la distribución de observaciones
-table(prs_df)
-fix(prs_df)
 
 #Podemos ver el propensity score de cada sujeto
 base1<- cbind(base1, prs_df)
 
 
 #Región de soporte común mediante graficos 
+
 labs <- paste("Propensity", c("Versión B", "Versión A"))
+
 prs_df %>%
-  mutate(Cuestionario = ifelse(prs_df$Cuestionario_num== 1, labs[1], labs[2])) %>%
+  mutate(MODO1 = ifelse(prs_df$MODO== 1, labs[1], labs[2])) %>%
   ggplot(aes(x = pr_score)) +
   geom_histogram(color = "white") +
-  facet_wrap(~Cuestionario) +
+  facet_wrap(~MODO) +
   theme_bw()
 
 
-#Vamos al matching # versión cable
-#Versión completa
-mod_match <- matchit(Cuestionario_num ~ S4+S3_rec+S5_rec+S6+GSE+P1_rec+P2_rec+P3_rec+B5+C2_fct, s.weights = base1$pond,
+
+#matching #
+mod_match <- matchit(MODO ~ sexo + edad + educacion + ocupacion + jefe.hogar,
+                     s.weights = base1$pond_unificado,
                      method = "cem", data = base1)
 
-#Versión acotada
-mod_match <- matchit(Cuestionario_num ~ S4+S6b+P1_rec+P3_rec+B5+C2_fct,s.weights = base1$pond,
-                     method = "cem", data = base1,
-                     grouping = list(S4 = list(c(1),
-                                               c(2))))
 
 #Resumen general del matching
 resumen <- summary(mod_match)
@@ -86,18 +136,33 @@ lista <- list(total, match)
 write.xlsx(lista, "Tabla Matching.xlsx")
 
 #Visualización gráfica del emparejamiento
-plot(mod_match)
+
+
 
 dta_m <- match.data(mod_match) #Base de datos con matching ejecutado
 
+
+###################
+
+bal.1<-MatchBalance(dummymodo~sexo + edad + educacion + ocupacion + jefe.hogar, 
+                    data=dta_m,
+                    weights = dta_m$pr_score,
+                    match.out = NULL, ks=TRUE)
+
+
+#
+#
+#
+#
+#
 #Inspección general del matching: líneas de tratamiento y control deben ser similares
 
 fn_bal <- function(dta, variable) {
   dta$variable <- dta[, variable]
   if (variable == 'personas') dta$variable <- dta$variable
-  dta$Cuestionario_num <- as.factor(dta$Cuestionario_num)
+  dta$MODO <- as.factor(dta$MODO)
   support <- c(min(dta$variable), max(dta$variable))
-  ggplot(dta, aes(x = distance, y = variable, color = Cuestionario_num)) +
+  ggplot(dta, aes(x = distance, y = variable, color = MODO)) +
     geom_point(alpha = 0.2, size = 1.3) +
     geom_smooth(method = "loess", se = F) +
     xlab("Propensity score") +
@@ -106,7 +171,7 @@ fn_bal <- function(dta, variable) {
     ylim(support)
 }
 
-
+#################### MODIFICAR ############################
 
 library(gridExtra)
 grid.arrange(
