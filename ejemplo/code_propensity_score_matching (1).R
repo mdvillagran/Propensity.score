@@ -1,224 +1,78 @@
-
 library(MatchIt)
 library(dplyr)
-library(car)
 library(ggplot2)
-library(haven)
+library(foreign)
 library(gridExtra)
-library(reshape) # recodificar columnas por nombres
-library(texreg)
-library(openxlsx)
-
-library(Matching) # paquete que nos permiten evaluar el balance de la muestra
-library(ebal) # paquete que nos permiten evaluar el balance de la muestra
-
-#Abrimos nuestra base de datos
-
-setwd("C:/Users/Villagran/Desktop/datavoz/cati.capi")
-
-base <- read_sav("220518 BBDD Homologada Experimento CEP v3.sav")
-
-###### variables clave
-
-# Sexo -> SD_1
-
-# Edad -> SD_2EXACTA
-
-# Educacion -> SD_4 (recode 99 to NA)
-
-# Ocupacion -> SD_5 (recode 9 to NA)
-
-# Jefe de hogar -> SD_6 (recode 1, 2 to NA)
 
 
-base$SD_4[base$SD_4==99]<-NA
-base$SD_5[base$SD_5==9]<-NA
-base$SD_6[base$SD_6==8]<-NA
-base$SD_6[base$SD_6==9]<-NA
+#Abriremos nuestra base de datos
+base <- read_sav("220519 GPS Mayo REC-Pond-GSE sin perdidos_v4.sav")
 
-## SELECCION DE VARIABLES CLAVE
+####CREAR VARIABLE PLEBISCITO ENTRADA
+base$C2_fct <- as_factor(base$C2)
+base <- base %>% mutate(C2_fct = case_when(as.character(C2_fct) %>% is.na() ~ "No votó",
+                                           TRUE ~ as.character(C2_fct)))
+table(base$C2_fct)
+base$C2_fct <- as.factor(base$C2_fct)
+base$C2_fct <- factor(base$C2_fct, levels = levels(base$C2_fct)[c(1,4,3,2)])
 
-                        
-base1 <- base %>% dplyr::select( # tratamiento
-                         MODO,tipo_vivienda,
-                          # variables de control
-                         SD_1,SD_2EXACTA,SD_4,SD_5,SD_6,
-                          # Variables dependientes
-                         IND_POLITIZACION,M1_9,M2_8,M2_9,
-                         M1_13_1_rec,M1_13_2_rec,M1_13_3_rec,M1_13_4_rec,M1_13_5_rec,
-                          # ponderador
-                         pond_unificado)
+#Recodificar Cuestionario
+base <- base %>% mutate(Cuestionario_num = case_when(Cuestionario == "Versión A" ~ 1,
+                                                     Cuestionario == "Versión B" ~ 0))
+base1 <- base %>% select(respondent_id, Cuestionario, Cuestionario_num, S4,S3_rec,S5_rec,S6,S6b,GSE,P1,P1_rec,P2,P2_rec,P3,P3_rec,B5,C3,
+                         B7_1_1,B7_1_2,B7_1_3,B7_1_4,B7_1_5,B7_1_6,B7_2_1,B7_2_2,B7_2_3,B7_2_4,B7_2_5,B7_2_6,C2_fct,pond)
 
+base1 <- na.omit(base1)
 
-## dejamos solamente las observaciones con el campo tipo de vivienda casa, depto
-#base1<- base1 %>% filter(tipo_vivienda %in% c(1, 2))
+##Convertir variables a factor
+# Check columns classes
+sapply(base1, class)
 
+base1<-base1 %>% mutate_if(sjlabelled::is_labelled,as.factor)  
+base1$Cuestionario_num <- as.factor(base1$Cuestionario_num)
 
-# Creamos variabla de identificación
-base1$id<-rownames(base1)
+#Elaboraremos nuestro propensity score
+#Version completa
+m_ps <- glm(Cuestionario_num ~ S4+S3_rec+S5_rec+S6+GSE+P1+P2+P3+B5+C2_fct, family = binomial, data = base1)
 
-#base1<-droplevels(as_factor(base1))
+summary(m_ps)
 
-base1 = reshape::rename(base1, c(SD_1="sexo",SD_2EXACTA ="edad", SD_4 ="educacion",
-                        SD_5="ocupacion",SD_6 = "jefe.hogar" ))
+#Versión acotada
+m_ps <- glm(Cuestionario_num ~ S4+S6b+P1_rec+P3_rec+B5+C2_fct, family = binomial, data = base1)
 
-
-sapply(base1,class)
-
-## la función propensity precisa quitar observaciones NA de las covariables
-
-base1 <- base1[!is.na(base1$sexo),]
-base1 <- base1[!is.na(base1$edad),]
-base1 <- base1[!is.na(base1$educacion),]
-base1 <- base1[!is.na(base1$ocupacion),]
-base1 <- base1[!is.na(base1$jefe.hogar),]
-
-
-# por comodidad para la evaluación de balance, cambiaremos variables ordinales
-# en numéricas o binarias en dummyes
-
-base1$sexo[base1$sexo==2]<-0 # mujer
-base1$sexo<-as.numeric(base1$sexo)
-
-base1$edad<-as.numeric((base1$edad))
-
-base1$educacion<-as.numeric(base1$educacion)
-
-base1$ocupacion<-as.numeric(base1$ocupacion)
-
-base1$ocupacion <- recode(base1$ocupacion, 
-                            "1=2; 
-                             2=1; 
-                             3=0")
-# 0, No trabaja
-# 1, No trabaja pero busca empleo
-# 2, Trabaja
-
-
-base1$jefe.hogar<-as.numeric(base1$jefe.hogar)
-base1$jefe.hogar[base1$jefe.hogar==2]<-0 # No es jefe de hogar
-
-
-base1$MODO<-as.numeric(base1$MODO)
-
-# CATI/TELEFONO = 1
-# CAPI = 0
-
-base1$MODO <- recode(base1$MODO, 
-                          "1=0; 
-                             2=1")
-
-
-# Evaluamos balance de las variables originales
-
-
-bal.1<-MatchBalance(MODO~sexo + edad + educacion + ocupacion + jefe.hogar, 
-                    data=base1,
-                    match.out = NULL, ks=TRUE)
-
-# Herramienta para visualizar de forma más amigable los resultados
-
-bal1.label  <-c("sexo","edad","educacion", "ocupacion","jefe.hogar")
-
-bal1.m1  <- baltest.collect(matchbal.out=bal.1,var.names=bal1.label,after=FALSE)
-
-# OUTPUT
-round(bal1.m1,2)
-
-
-
-# "Mean.Tr" corresponde a los valores medios de "CAPI" / Dado que previamente se recodificó como 0
-# "Mean.Co" corresponde a los valores medios de "CATI" / Dado que previamente se recodificó como 0
-
-# "diff.pooled" reporta la diferencia estandarizada absoluta; valores bajo 15 son los ideales
-
-# Todos los "pval" inferiores a 0.05 hablan de desbalance
-
-# "KS pval" evalúa distribución en variables de más de dos niveles continuas (por eso
-# "jefe.hogar" y "sexo" arrojan NA). Cuando es significativo indica diferencias significativas
-# en cuanto a distribución
-
-# EN RESUMEN: Hay diferencias entre los grupos de acuerdo a "Sexo", "Edad", "Educación" y
-# "Ocupación". No hay diferencias en cuanto a "jefe.hogar"
-
-
-################################################################################
-#######################  Elaboraremos nuestro propensity score #################
-################################################################################
-
-
-
-m_ps <- stats::glm(MODO ~ sexo + edad + educacion + ocupacion + jefe.hogar, 
-            family = binomial(), data = base1)
-
-screenreg(m_ps)
-
-# Propensity asociado a cada MODO (1-probabilidad/propensity de ser escogidos, 
-# en los controles;Y probabilidad de ser escogidos, en los tratados)
+summary(m_ps)
 
 prs_df <- data.frame(pr_score = predict(m_ps, type = "response"),
-                     MODO = m_ps$model$MODO)
+                     Cuestionario_num = m_ps$model$Cuestionario_num)
 
-# agregamos propensity a nuestra base1
+#Observemos la distribución de observaciones
+table(prs_df)
+fix(prs_df)
 
-base1<-cbind(base1, prs_df)
-
-
-# Creamos un segundo ponderador IPW
-
-base1$w<- 1/base1$pr_score
+#Podemos ver el propensity score de cada sujeto
+base1<- cbind(base1, prs_df)
 
 
-################################################################################
-####### Evaluamosnuevamente balance de las variables originales ################
-################################################################################
-
-# bal.1<-MatchBalance(MODO~sexo + edad + educacion + ocupacion + jefe.hogar,
-#                     data=base1,weights = base1$w,
-#                     match.out = NULL, ks=TRUE)
-# 
-# # Herramienta para visualizar de forma más amigable los resultados
-# 
-# bal1.label  <-c("sexo","edad","educacion", "ocupacion","jefe.hogar")
-# 
-# bal1.m1  <- baltest.collect(matchbal.out=bal.1,var.names=bal1.label,after=FALSE)
-# 
-# # OUTPUT
-# round(bal1.m1,2)
-# 
-
-################################################################################
-
-" En este punto no comprendo por qué el análisis de balance siguie manifestando
-discrepancias de la misma magnitud entre los grupos, pese al propensity"
-
-"Revisaré que ocurre en el scrib de ejemplo"
-
-################################################################################
-
-
-
-
-
-# Visualización propensity CAPI/ CATI
-
-labs <- paste("Propensity", c("CAPI", "CATI"))
-
+#Región de soporte común mediante graficos 
+labs <- paste("Propensity", c("Versión B", "Versión A"))
 prs_df %>%
-  mutate(MODO1 = ifelse(prs_df$MODO == 1, labs[1], labs[2])) %>%
+  mutate(Cuestionario = ifelse(prs_df$Cuestionario_num== 1, labs[1], labs[2])) %>%
   ggplot(aes(x = pr_score)) +
-  geom_histogram(color = "white", bins = 30) +
-  facet_wrap(~MODO1) +
+  geom_histogram(color = "white") +
+  facet_wrap(~Cuestionario) +
   theme_bw()
 
 
-
-
-#matching #
-mod_match <- matchit(MODO ~ sexo + edad + educacion + ocupacion + jefe.hogar,
-                     s.weights = base1$pond_unificado,
+#Vamos al matching
+#Versión completa
+mod_match <- matchit(Cuestionario_num ~ S4+S3_rec+S5_rec+S6+GSE+P1_rec+P2_rec+P3_rec+B5+C2_fct, s.weights = base1$pond,
                      method = "cem", data = base1)
 
+#Versión acotada
+mod_match <- matchit(Cuestionario_num ~ S4+S6b+P1_rec+P3_rec+B5+C2_fct,s.weights = base1$pond,
+                     method = "cem", data = base1,
+                     grouping = list(S4 = list(c(1),
+                                               c(2))))
 
 #Resumen general del matching
 resumen <- summary(mod_match)
@@ -230,26 +84,18 @@ lista <- list(total, match)
 write.xlsx(lista, "Tabla Matching.xlsx")
 
 #Visualización gráfica del emparejamiento
-
-
+plot(mod_match)
 
 dta_m <- match.data(mod_match) #Base de datos con matching ejecutado
-
-
-###################
-
-################################################################################
-
-"NO ESTOY SEGURO DE QUÉ VARIABLE CORRESPONDE A DISTANCIA"
 
 #Inspección general del matching: líneas de tratamiento y control deben ser similares
 
 fn_bal <- function(dta, variable) {
   dta$variable <- dta[, variable]
   if (variable == 'personas') dta$variable <- dta$variable
-  dta$MODO <- as.factor(dta$MODO)
+  dta$Cuestionario_num <- as.factor(dta$Cuestionario_num)
   support <- c(min(dta$variable), max(dta$variable))
-  ggplot(dta, aes(x = distance, y = variable, color = MODO)) +
+  ggplot(dta, aes(x = distance, y = variable, color = Cuestionario_num)) +
     geom_point(alpha = 0.2, size = 1.3) +
     geom_smooth(method = "loess", se = F) +
     xlab("Propensity score") +
@@ -258,15 +104,20 @@ fn_bal <- function(dta, variable) {
     ylim(support)
 }
 
-#################### MODIFICAR ############################
+
 
 library(gridExtra)
 grid.arrange(
-  fn_bal(dta_m, "sexo"),
-  fn_bal(dta_m, "edad"), 
-  fn_bal(dta_m, "educacion"),
-  fn_bal(dta_m, "ocupacion") ,
-  fn_bal(dta_m, "jefe.hogar"),
+  fn_bal(dta_m, "S4"),
+  fn_bal(dta_m, "S3_rec") + theme(legend.position = "none"),
+  fn_bal(dta_m, "S5_rec"),
+  fn_bal(dta_m, "S6") + theme(legend.position = "none"),
+  fn_bal(dta_m, "S6b"),
+  fn_bal(dta_m, "GSE"),
+  fn_bal(dta_m, "P1_rec"),
+  fn_bal(dta_m, "P2_rec"),
+  fn_bal(dta_m, "P3_rec"),
+  fn_bal(dta_m, "B5"),
   nrow = 5, widths = c(1, 0.8)
 )
 
