@@ -14,6 +14,8 @@ library(ebal) # paquete que nos permiten evaluar el balance de la muestra
 
 #Abrimos nuestra base de datos
 
+rm(list = ls())
+
 setwd("C:/Users/Villagran/Desktop/datavoz/cati.capi")
 
 base <- read_sav("220518 BBDD Homologada Experimento CEP v3.sav")
@@ -54,7 +56,7 @@ base1 <- base %>% dplyr::select( # tratamiento
 #base1<- base1 %>% filter(tipo_vivienda %in% c(1, 2))
 
 
-# Creamos variabla de identificación
+# Creamos variable de identificación
 base1$id<-rownames(base1)
 
 #base1<-droplevels(as_factor(base1))
@@ -74,7 +76,7 @@ base1 <- base1[!is.na(base1$ocupacion),]
 base1 <- base1[!is.na(base1$jefe.hogar),]
 
 
-# por comodidad para la evaluación de balance, cambiaremos variables ordinales
+# para la evaluación de balance, por comodidad  cambiaremos variables ordinales
 # en numéricas o binarias en dummyes
 
 base1$sexo[base1$sexo==2]<-0 # mujer
@@ -86,10 +88,8 @@ base1$educacion<-as.numeric(base1$educacion)
 
 base1$ocupacion<-as.numeric(base1$ocupacion)
 
-base1$ocupacion <- recode(base1$ocupacion, 
-                            "1=2; 
-                             2=1; 
-                             3=0")
+base1$ocupacion <-Recode(base1$ocupacion,"1=2;2=1;3=0")
+
 # 0, No trabaja
 # 1, No trabaja pero busca empleo
 # 2, Trabaja
@@ -104,10 +104,14 @@ base1$MODO<-as.numeric(base1$MODO)
 # CATI/TELEFONO = 1
 # CAPI = 0
 
-base1$MODO <- recode(base1$MODO, 
+base1$MODO <- Recode(base1$MODO, 
                           "1=0; 
                              2=1")
 
+
+################################################################################
+######################## METODO PARA EVALUAR BALANCE ###########################
+################################################################################
 
 # Evaluamos balance de las variables originales
 
@@ -135,15 +139,15 @@ round(bal1.m1,2)
 # Todos los "pval" inferiores a 0.05 hablan de desbalance
 
 # "KS pval" evalúa distribución en variables de más de dos niveles continuas (por eso
-# "jefe.hogar" y "sexo" arrojan NA). Cuando es significativo indica diferencias significativas
+# "jefe.hogar" y "sexo" arrojan NA). Cuando es significativo indica diferencias importantes
 # en cuanto a distribución
 
-# EN RESUMEN: Hay diferencias entre los grupos de acuerdo a "Sexo", "Edad", "Educación" y
+# RESUMEN: Hay diferencias entre los grupos de acuerdo a "Sexo", "Edad", "Educación" y
 # "Ocupación". No hay diferencias en cuanto a "jefe.hogar"
 
 
 ################################################################################
-#######################  Elaboraremos nuestro propensity score #################
+#######################  Elaboramos nuestro propensity score #################
 ################################################################################
 
 
@@ -170,29 +174,28 @@ base1$w<- 1/base1$pr_score
 
 
 ################################################################################
-####### Evaluamosnuevamente balance de las variables originales ################
+####### Evaluamos nuevamente balance de las variables originales ################
 ################################################################################
 
-# bal.1<-MatchBalance(MODO~sexo + edad + educacion + ocupacion + jefe.hogar,
-#                     data=base1,weights = base1$w,
-#                     match.out = NULL, ks=TRUE)
-# 
-# # Herramienta para visualizar de forma más amigable los resultados
-# 
-# bal1.label  <-c("sexo","edad","educacion", "ocupacion","jefe.hogar")
-# 
-# bal1.m1  <- baltest.collect(matchbal.out=bal.1,var.names=bal1.label,after=FALSE)
-# 
-# # OUTPUT
-# round(bal1.m1,2)
-# 
+bal.1<-MatchBalance(MODO~sexo + edad + educacion + ocupacion + jefe.hogar,
+                    data=base1,weights = base1$prs_df,
+                    match.out = NULL, ks=TRUE)
+
+# Herramienta para visualizar de forma más amigable los resultados
+
+bal1.label  <-c("sexo","edad","educacion", "ocupacion","jefe.hogar")
+
+bal1.m1  <- baltest.collect(matchbal.out=bal.1,var.names=bal1.label,after=FALSE)
+
+# OUTPUT
+round(bal1.m1,2)
+
 
 ################################################################################
 
-" En este punto no comprendo por qué el análisis de balance siguie manifestando
-discrepancias de la misma magnitud entre los grupos, pese al propensity"
-
-"Revisaré que ocurre en el scrib de ejemplo"
+" En este punto no comprendo por qué el análisis de balance sigue manifestando
+discrepancias de la misma magnitud entre los grupos, a pesar de que agregamos 
+pesos de acuerdo al propensity"
 
 ################################################################################
 
